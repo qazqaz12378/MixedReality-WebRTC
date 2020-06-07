@@ -99,8 +99,9 @@ namespace Microsoft.MixedReality.WebRTC.Tracing
 
         #region SDP
 
-        [Event(0x2001, Level = EventLevel.Informational, Keywords = Keywords.Sdp)]
-        public void LocalSdpReady(string type, string sdp) { WriteEvent(0x2001, type, sdp); }
+        // DEPRECATED; see 0x2006
+        //[Event(0x2001, Level = EventLevel.Informational, Keywords = Keywords.Sdp)]
+        //public void LocalSdpReady(string type, string sdp) { WriteEvent(0x2001, type, sdp); }
 
         [Event(0x2002, Level = EventLevel.Informational, Keywords = Keywords.Sdp)]
         public void IceCandidateReady(string sdpMid, int sdpMlineindex, string candidate)
@@ -120,15 +121,15 @@ namespace Microsoft.MixedReality.WebRTC.Tracing
             WriteEvent(0x2005, sdpMid, sdpMlineindex, candidate);
         }
 
+        [Event(0x2006, Level = EventLevel.Informational, Keywords = Keywords.Sdp)]
+        public void LocalSdpReady(SdpMessageType type, string sdp) { WriteEvent(0x2006, (int)type, sdp); }
+
         #endregion
 
         #region Media
 
-        [Event(0x3001, Level = EventLevel.Informational, Keywords = Keywords.Media)]
-        public void TrackAdded(PeerConnection.TrackKind trackKind) { WriteEvent(0x3001, (int)trackKind); }
-
-        [Event(0x3002, Level = EventLevel.Informational, Keywords = Keywords.Media)]
-        public void TrackRemoved(PeerConnection.TrackKind trackKind) { WriteEvent(0x3002, (int)trackKind); }
+        // 0x3001 - TrackAdded (deprecated)
+        // 0x3002 - TrackRemoved (deprecated)
 
         [Event(0x3003, Level = EventLevel.Verbose, Keywords = Keywords.Media)]
         public void I420ALocalVideoFrameReady(uint width, uint height) { WriteEvent(0x3003, (int)width, (int)height); }
@@ -143,15 +144,15 @@ namespace Microsoft.MixedReality.WebRTC.Tracing
         public void Argb32RemoteVideoFrameReady(uint width, uint height) { WriteEvent(0x3006, (int)width, (int)height); }
 
         [Event(0x3007, Level = EventLevel.Verbose, Keywords = Keywords.Media)]
-        public void LocalAudioFrameReady(uint bitsPerSample, uint channelCount, uint frameCount)
+        public void LocalAudioFrameReady(uint bitsPerSample, uint sampleRate, uint channelCount, uint sampleCount)
         {
-            WriteEvent(0x3007, (int)bitsPerSample, (int)channelCount, (int)frameCount);
+            WriteEvent(0x3007, (int)bitsPerSample, (int)sampleRate, (int)channelCount, (int)sampleCount);
         }
 
         [Event(0x3008, Level = EventLevel.Verbose, Keywords = Keywords.Media)]
-        public void RemoteAudioFrameReady(uint bitsPerSample, uint channelCount, uint frameCount)
+        public void RemoteAudioFrameReady(uint bitsPerSample, uint sampleRate, uint channelCount, uint sampleCount)
         {
-            WriteEvent(0x3008, (int)bitsPerSample, (int)channelCount, (int)frameCount);
+            WriteEvent(0x3008, (int)bitsPerSample, (int)sampleRate, (int)channelCount, (int)sampleCount);
         }
 
         [Event(0x3100, Level = EventLevel.Verbose, Keywords = Keywords.Media)]
@@ -202,6 +203,18 @@ namespace Microsoft.MixedReality.WebRTC.Tracing
             WriteEvent(0x3107, instanceId, queuedDtMs, dequeuedDtMs);
         }
 
+        [Event(0x3108, Level = EventLevel.Informational, Keywords = Keywords.Media)]
+        public void VideoTrackAdded(string trackName) { WriteEvent(0x3108, trackName); }
+
+        [Event(0x3109, Level = EventLevel.Informational, Keywords = Keywords.Media)]
+        public void VideoTrackRemoved(string trackName) { WriteEvent(0x3109, trackName); }
+
+        [Event(0x3208, Level = EventLevel.Informational, Keywords = Keywords.Media)]
+        public void AudioTrackAdded(string trackName) { WriteEvent(0x3208, trackName); }
+
+        [Event(0x3209, Level = EventLevel.Informational, Keywords = Keywords.Media)]
+        public void AudioTrackRemoved(string trackName) { WriteEvent(0x3209, trackName); }
+
         #endregion
 
         #region DataChannel
@@ -230,6 +243,21 @@ namespace Microsoft.MixedReality.WebRTC.Tracing
         #endregion
 
         #region EventWrite overloads
+
+        [NonEvent]
+        public unsafe void WriteEvent(int eventId, int arg1, int arg2, int arg3, int arg4)
+        {
+            EventData* dataDesc = stackalloc EventData[4];
+            dataDesc[0].DataPointer = (IntPtr)(&arg1);
+            dataDesc[0].Size = 4;
+            dataDesc[1].DataPointer = (IntPtr)(&arg2);
+            dataDesc[1].Size = 4;
+            dataDesc[2].DataPointer = (IntPtr)(&arg3);
+            dataDesc[2].Size = 4;
+            dataDesc[3].DataPointer = (IntPtr)(&arg4);
+            dataDesc[3].Size = 4;
+            WriteEventCore(eventId, 4, dataDesc);
+        }
 
         [NonEvent]
         public unsafe void WriteEvent(int eventId, string arg1, int arg2, string arg3)

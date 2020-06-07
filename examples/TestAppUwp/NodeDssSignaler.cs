@@ -3,12 +3,11 @@
 
 using Newtonsoft.Json;
 using System;
-using System.Collections;
 using System.Net.Http;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.MixedReality.WebRTC;
+using Newtonsoft.Json.Serialization;
 
 namespace TestAppUwp
 {
@@ -22,38 +21,41 @@ namespace TestAppUwp
     /// as well as allow rapid prototyping with the <c>node-dss</c>
     /// server solution.
     /// </remarks>
-    public class NodeDssSignaler
+    public class NodeDssSignaler : NotifierBase // FIXME - Use ViewModel instead
     {
         /// <summary>
-        /// Data that makes up a signaler message
+        /// Signaler message as serialized to and from the node-dss server.
         /// </summary>
         /// <remarks>
-        /// Note: the same data is used for transmitting and receiving
+        /// Field names are defined by the node-dss protocol.
         /// </remarks>
         [Serializable]
         public class Message
         {
             /// <summary>
-            /// Possible message types as-serialized on the wire
+            /// Serialized message type.
             /// </summary>
+            /// <remarks>
+            /// The enumeration values are defined by the node-dss protocol.
+            /// </remarks>
             public enum WireMessageType
             {
                 /// <summary>
-                /// An unrecognized message
+                /// Unknown message.
                 /// </summary>
                 Unknown = 0,
                 /// <summary>
-                /// A SDP offer message
+                /// SDP offer message.
                 /// </summary>
-                Offer,
+                Offer = 1,
                 /// <summary>
-                /// A SDP answer message
+                /// SDP answer message.
                 /// </summary>
-                Answer,
+                Answer = 2,
                 /// <summary>
-                /// A trickle-ice or ice message
+                /// Tickle-ICE or ICE candidate message.
                 /// </summary>
-                Ice
+                Ice = 3
             }
 
             /// <summary>
@@ -75,17 +77,100 @@ namespace TestAppUwp
             }
 
             /// <summary>
-            /// The message type
+            /// Convert an SDP message type to a serialized node-dss message type.
+            /// </summary>
+            /// <param name="type">The SDP message type to convert.</param>
+            /// <returns>The equivalent node-dss serialized message type.</returns>
+            public static WireMessageType TypeFromSdpMessageType(SdpMessageType type)
+            {
+                switch (type)
+                {
+                case SdpMessageType.Offer: return WireMessageType.Offer;
+                case SdpMessageType.Answer: return WireMessageType.Answer;
+                }
+                throw new ArgumentException($"Invalid SDP message type '{type}'.");
+            }
+
+            /// <summary>
+            /// Create a node-dss message from an existing SDP offer or answer message.
+            /// </summary>
+            /// <param name="message">The SDP message to serialize.</param>
+            /// <returns>The newly create node-dss message containing the serialized SDP message.
+            public static Message FromSdpMessage(SdpMessage message)
+            {
+                return new Message
+                {
+                    MessageType = TypeFromSdpMessageType(message.Type),
+                    Data = message.Content,
+                    IceDataSeparator = "|"
+                };
+            }
+
+            /// <summary>
+            /// Create a node-dss message from an existing ICE candidate.
+            /// </summary>
+            /// <param name="candidate">The ICE candidate to serialize.</param>
+            /// <returns>The newly create node-dss message containing the serialized ICE candidate.</returns>
+            public static Message FromIceCandidate(IceCandidate candidate)
+            {
+                return new Message
+                {
+                    MessageType = WireMessageType.Ice,
+                    Data = $"{candidate.Content}|{candidate.SdpMlineIndex}|{candidate.SdpMid}",
+                    IceDataSeparator = "|"
+                };
+            }
+
+            /// <summary>
+            /// Convert the current SDP message back to an <see cref="SdpMessage"/> object.
+            /// </summary>
+            /// <returns>The newly created <see cref="SdpMessage"/> object corresponding to the current message.</returns>
+            public SdpMessage ToSdpMessage()
+            {
+                if ((MessageType != WireMessageType.Offer) && (MessageType != WireMessageType.Answer))
+                {
+                    throw new InvalidOperationException("The node-dss message it not an SDP message.");
+                }
+                return new SdpMessage
+                {
+                    Type = (MessageType == WireMessageType.Offer ? SdpMessageType.Offer : SdpMessageType.Answer),
+                    Content = Data
+                };
+            }
+
+            /// <summary>
+            /// Convert the current ICE message back to an <see cref="IceCandidate"/> object.
+            /// </summary>
+            /// <returns>The newly created <see cref="IceCandidate"/> object corresponding to the current message.</returns>
+            public IceCandidate ToIceCandidate()
+            {
+                if (MessageType != WireMessageType.Ice)
+                {
+                    throw new InvalidOperationException("The node-dss message it not an ICE candidate message.");
+                }
+                var parts = Data.Split(new string[] { IceDataSeparator }, StringSplitOptions.RemoveEmptyEntries);
+                // Note the arguments order; candidate content is first in the node-dss protocol.
+                // The order of the arguments matches the order in which they are serialized in FromIceCandidate().
+                return new IceCandidate
+                {
+                    SdpMid = parts[2],
+                    SdpMlineIndex = int.Parse(parts[1]),
+                    Content = parts[0]
+                };
+            }
+
+            /// <summary>
+            /// Message type.
             /// </summary>
             public WireMessageType MessageType;
 
             /// <summary>
-            /// The primary message contents
+            /// Primary message content, which depends on the type of message.
             /// </summary>
             public string Data;
 
             /// <summary>
-            /// The data separator needed for proper ICE serialization
+            /// Data separator for ICE serialization.
             /// </summary>
             public string IceDataSeparator;
         }
@@ -137,7 +222,7 @@ namespace TestAppUwp
         /// interval between polling requests may be longer depending on
         /// network conditions.
         /// </remarks>
-        public float PollTimeMs = 5f;
+        public int PollTimeMs = 500;
 
         /// <summary>
         /// Indicate whether the <c>node-dss</c> server polling is active,
@@ -152,8 +237,10 @@ namespace TestAppUwp
         {
             get
             {
-                // Atomic read
-                return (Interlocked.CompareExchange(ref _isPolling, 1, 1) == 1);
+                lock (_pollingLock)
+                {
+                    return _isPolling;
+                }
             }
         }
 
@@ -162,7 +249,7 @@ namespace TestAppUwp
         /// be restarted with <see cref="StartPollingAsync"/>.
         /// </summary>
         public event Action OnPollingDone;
-        
+
         /// <summary>
         /// Event that occurs when signaling is connected.
         /// </summary>
@@ -171,9 +258,7 @@ namespace TestAppUwp
         /// <summary>
         /// Event that occurs when signaling is disconnected.
         /// </summary>
-#pragma warning disable 67
         public event Action OnDisconnect;
-#pragma warning restore 67
 
         /// <summary>
         /// Event that occurs when the signaler receives a new message.
@@ -213,13 +298,11 @@ namespace TestAppUwp
         private CancellationTokenSource _cancellationTokenSource;
 
         /// <summary>
-        /// Atomic boolean indicating whether polling is underway, including being cancelled.
+        /// Indicates whether polling is underway, including being cancelled.
         /// </summary>
-        /// <remarks>
-        /// This field is an <code>int</code> because it is modified atomically, and
-        /// <see cref="Interlocked"/> does not provide a <code>bool</code> overload.
-        /// </remarks>
-        private int _isPolling = 0;
+        private bool _isPolling = false;
+
+        private readonly object _pollingLock = new object();
 
         public NodeDssSignaler()
         {
@@ -250,6 +333,7 @@ namespace TestAppUwp
                 if (postTask.Exception != null)
                 {
                     OnFailure?.Invoke(postTask.Exception);
+                    OnDisconnect?.Invoke();
                 }
             });
 
@@ -289,18 +373,23 @@ namespace TestAppUwp
         /// This method can safely be called multiple times, and will do nothing if
         /// polling is already underway or waiting to be stopped.
         /// </remarks>
-        public bool StartPollingAsync()
+        public bool StartPollingAsync(CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(LocalPeerId))
             {
-                throw new Exception("Cannot start polling with empty LocalId.");
+                throw new InvalidOperationException("Cannot start polling with empty LocalId.");
             }
 
-            if (Interlocked.CompareExchange(ref _isPolling, 1, 0) == 1)
+            lock (_pollingLock)
             {
-                // Already polling
-                return false;
+                if (_isPolling)
+                {
+                    return false;
+                }
+                _isPolling = true;
+                _cancellationTokenSource = new CancellationTokenSource();
             }
+            RaisePropertyChanged("IsPolling");
 
             // Build the GET polling request
             string requestUri = $"{_httpServerAddress}data/{LocalPeerId}";
@@ -308,91 +397,97 @@ namespace TestAppUwp
             long lastPollTimeTicks = DateTime.UtcNow.Ticks;
             long pollTimeTicks = TimeSpan.FromMilliseconds(PollTimeMs).Ticks;
 
-            _cancellationTokenSource = new CancellationTokenSource();
-            var token = _cancellationTokenSource.Token;
-            token.Register(() =>
+            var masterTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token, cancellationToken);
+            var masterToken = masterTokenSource.Token;
+            masterToken.Register(() =>
             {
-                Interlocked.Exchange(ref _isPolling, 0);
-                // TODO - Potentially a race condition here if StartPollingAsync() called,
-                //        but would be even worse with the exchange being after, as
-                //        StopPollingAsync() would attempt to read from it while being disposed.
-                _cancellationTokenSource.Dispose();
-                _cancellationTokenSource = null;
+                lock (_pollingLock)
+                {
+                    _isPolling = false;
+                    _cancellationTokenSource.Dispose();
+                    _cancellationTokenSource = null;
+                }
+                RaisePropertyChanged("IsPolling");
+                Interlocked.Exchange(ref _connectedEventFired, 0);
+                OnDisconnect?.Invoke();
                 OnPollingDone?.Invoke();
+                masterTokenSource.Dispose();
             });
 
             // Prepare the repeating poll task.
             // In order to poll at the specified frequency but also avoid overlapping requests,
             // use a repeating task which re-schedule itself on completion, either immediately
             // if the polling delay is elapsed, or at a later time otherwise.
-            Action nextAction = null;
-            nextAction = () =>
+            async void PollServer()
             {
-                token.ThrowIfCancellationRequested();
-
-                // Send GET request to DSS server.
-                // In order to avoid exceptions in GetStreamAsync() when the server returns a non-success status code (e.g. 404),
-                // first get the HTTP headers, check the status code, then if successful wait for content.
-                lastPollTimeTicks = DateTime.UtcNow.Ticks;
-                _httpClient.GetAsync(requestUri, HttpCompletionOption.ResponseHeadersRead).ContinueWith((getTask) =>
+                try
                 {
-                    if (getTask.Exception != null)
+                    // Polling loop
+                    while (true)
                     {
-                        OnFailure?.Invoke(getTask.Exception);
-                        return;
-                    }
+                        masterToken.ThrowIfCancellationRequested();
 
-                    token.ThrowIfCancellationRequested();
+                        // Send GET request to DSS server.
+                        lastPollTimeTicks = DateTime.UtcNow.Ticks;
+                        HttpResponseMessage response = await _httpClient.GetAsync(requestUri,
+                            HttpCompletionOption.ResponseHeadersRead, masterToken);
 
-                    HttpResponseMessage response = getTask.Result;
-                    if (response.IsSuccessStatusCode)
-                    {
-                        response.Content.ReadAsStringAsync().ContinueWith((readTask) =>
+                        // On first successful HTTP request, raise the connected event
+                        if (0 == Interlocked.Exchange(ref _connectedEventFired, 1))
                         {
-                            if (readTask.Exception != null)
+                            OnConnect?.Invoke();
+                        }
+
+                        masterToken.ThrowIfCancellationRequested();
+
+                        // In order to avoid exceptions in GetStreamAsync() when the server returns a non-success status code (e.g. 404),
+                        // first get the HTTP headers, check the status code, then if successful wait for content.
+                        if (response.IsSuccessStatusCode)
+                        {
+                            string jsonMsg = await response.Content.ReadAsStringAsync();
+
+                            masterToken.ThrowIfCancellationRequested();
+
+                            var jsonSettings = new JsonSerializerSettings
                             {
-                                OnFailure?.Invoke(readTask.Exception);
-                                return;
-                            }
-
-                            token.ThrowIfCancellationRequested();
-
-                            var jsonMsg = readTask.Result;
-                            var msg = JsonConvert.DeserializeObject<Message>(jsonMsg);
+                                Error = (object s, ErrorEventArgs e) => throw new Exception("JSON error: " + e.ErrorContext.Error.Message)
+                            };
+                            Message msg = JsonConvert.DeserializeObject<Message>(jsonMsg, jsonSettings);
                             if (msg != null)
                             {
                                 OnMessage?.Invoke(msg);
                             }
                             else
                             {
-                                OnFailure?.Invoke(new Exception($"Failed to deserialize SignalerMessage object from JSON."));
+                                throw new Exception("Failed to deserialize signaler message from JSON.");
                             }
-                        });
-                    }
+                        }
 
-                    // Some time may have passed waiting for GET content; check token again for responsiveness
-                    token.ThrowIfCancellationRequested();
+                        masterToken.ThrowIfCancellationRequested();
 
-                    // Repeat task to continue polling
-                    long curTime = DateTime.UtcNow.Ticks;
-                    long deltaTicks = curTime - lastPollTimeTicks;
-                    if (deltaTicks >= pollTimeTicks)
-                    {
-                        // Previous GET task took more time than polling delay, execute ASAP
-                        Task.Run(nextAction, token);
-                    }
-                    else
-                    {
-                        // Previous GET task took less time than polling delay, schedule next polling
+                        // Delay next loop iteration if current polling was faster than target poll duration
+                        long curTime = DateTime.UtcNow.Ticks;
+                        long deltaTicks = curTime - lastPollTimeTicks;
                         long remainTicks = pollTimeTicks - deltaTicks;
-                        int nextScheduleTimeMs = (int)(new TimeSpan(remainTicks).TotalMilliseconds);
-                        Task.Delay(nextScheduleTimeMs, token).ContinueWith(_ => nextAction(), token);
+                        if (remainTicks > 0)
+                        {
+                            int waitTimeMs = new TimeSpan(remainTicks).Milliseconds;
+                            await Task.Delay(waitTimeMs);
+                        }
                     }
-                });
-            };
+                }
+                catch (OperationCanceledException)
+                {
+                    // Manual cancellation via UI, do not report error
+                }
+                catch (Exception ex)
+                {
+                    OnFailure?.Invoke(ex);
+                }
+            }
 
-            // Start the first poll task immediately
-            Task.Run(nextAction, token);
+            // Start the poll task immediately
+            Task.Run(PollServer, masterToken);
             return true;
         }
 
@@ -410,12 +505,14 @@ namespace TestAppUwp
         /// </remarks>
         public bool StopPollingAsync()
         {
-            // Atomic read
-            if (Interlocked.CompareExchange(ref _isPolling, 1, 1) == 1)
+            lock (_pollingLock)
             {
-                // Note: cannot dispose right away, need to wait for end of all tasks.
-                _cancellationTokenSource?.Cancel();
-                return true;
+                if (_isPolling)
+                {
+                    // Note: cannot dispose right away, need to wait for end of all tasks.
+                    _cancellationTokenSource?.Cancel();
+                    return true;
+                }
             }
             return false;
         }

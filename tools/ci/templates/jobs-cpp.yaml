@@ -1,19 +1,66 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# [TEMPLATE] Compile C++ library Microsoft.MixedReality.WebRTC.Native.dll
+# [TEMPLATE] Compile library mrwebrtc.dll
 
 parameters:
-  buildAgent: ''
-  buildPlatform: ''    # Win32|UWP
-  buildArch: ''        # x86|x64|ARM|ARM64
-  msbuildPlatform: ''  # Win32|x64|ARM|ARM64
-  buildConfig: ''      # Debug|Release
+# Build agent pool
+- name: buildAgent
+  displayName: 'Build Agent Pool'
+  type: string
+  default: ''
+# Restore PDBs of libwebrtc from Core build
+- name: restoreCorePdbs
+  displayName: 'Restore core PDBs'
+  type: boolean
+  default: true
+# Run Component Governance detection and submit results
+- name: runComponentDetection
+  displayName: 'Run component detection'
+  type: boolean
+  default: true
+# Build platform
+- name: buildPlatform
+  displayName: 'Build Platform'
+  type: string
+  default: ''
+  values:
+  - 'Win32'
+  - 'UWP'
+# Build architecture
+- name: buildArch
+  displayName: 'Build Architecture'
+  type: string
+  default: ''
+  values:
+  - 'x86'
+  - 'x64'
+  - 'ARM'
+  - 'ARM64'
+# Build configuration
+- name: buildConfig
+  displayName: 'Build Configuration'
+  type: string
+  default: ''
+  values:
+  - 'Debug'
+  - 'Release'
+# Do testing
+- name: withTesting
+  displayName: 'Enable testing'
+  type: boolean
+  default: true
+# Publish artifacts after building
+- name: publishArtifacts
+  displayName: 'Publish artifacts'
+  type: boolean
+  default: false
 
 jobs:
 
-# Compile Microsoft.MixedReality.WebRTC.Native.dll
-- job: cpp_${{parameters.buildPlatform}}_${{parameters.buildArch}}_${{parameters.buildConfig}}
+# Compile mrwebrtc.dll
+- job: mrwebrtc_${{parameters.buildPlatform}}_${{parameters.buildArch}}_${{parameters.buildConfig}}
+  displayName: 'mrwebrtc (${{parameters.buildPlatform}}-${{parameters.buildArch}}-${{parameters.buildConfig}})'
   timeoutInMinutes: 360
   pool:
     name: ${{parameters.buildAgent}}
@@ -24,76 +71,99 @@ jobs:
     value: ${{parameters.buildPlatform}}-${{parameters.buildArch}}-${{parameters.buildConfig}}
   # This is overwritten later if restoring PDBs
   - name: PackagesConfigFile
-    value: '$(Build.SourcesDirectory)/libs/Microsoft.MixedReality.WebRTC.Native/src/${{parameters.buildPlatform}}/packages.config'
+    value: '$(Build.SourcesDirectory)/tools/build/mrwebrtc/${{parameters.buildPlatform}}/packages.config'
   steps:
-  - checkout: self
-    submodules: recursive
+
+  # Calculate MSBuild platform
+  - powershell: |
+      if ("$env:BUILD_ARCH" -eq "x86") {
+        $msbuildPlatform = "Win32"
+      } else {
+        $msbuildPlatform = $env:BUILD_ARCH
+      }
+      Write-Host "MSBuild platform = $msbuildPlatform"
+      Write-Host "##vso[task.setvariable variable=msbuildPlatform;]$msbuildPlatform"
+    displayName: 'Compute MSBuild platform'
+    env:
+      BUILD_ARCH: ${{parameters.buildArch}}
+    timeoutInMinutes: 5
+
+  # Checkout MixedReality-WebRTC
+  - checkout: 'self'
+    submodules: 'recursive'
+    fetchDepth: '50'
 
   # Map build* variables to script* ones
   - task: PowerShell@2
-    displayName: Map script variables
+    displayName: 'Map script variables'
     inputs:
-      targetType: filePath
-      filePath: tools/ci/mapVariables.ps1
+      targetType: 'filePath'
+      filePath: '$(Build.SourcesDirectory)/tools/ci/mapVariables.ps1'
       arguments: '${{parameters.buildPlatform}} ${{parameters.buildArch}} ${{parameters.buildConfig}}'
-
-  # Compute the PDB package variables
-  - task: PowerShell@2
-    displayName: 'Compute PDB package variables'
-    inputs:
-      targetType: filePath
-      filePath: tools/ci/computePdbPackageVars.ps1
-    env:
-      # Read $(MRWebRTC_PdbPackageVersion) from pipeline variables
-      WRITE_VERSION: 'false'
-    condition: eq(variables['MRWebRTC_RestorePDBs'], 'true')
-
-  # Download the PDBs
-  - task: UniversalPackages@0
-    displayName: Download core PDBs
-    inputs:
-      command: download
-      vstsFeed: $(MRWebRTC_PdbFeed)
-      vstsFeedPackage: $(MRWebRTC_PdbPackageName)
-      vstsPackageVersion: $(MRWebRTC_PdbPackageVersion)
-      downloadDirectory: '$(Build.SourcesDirectory)\_pdbs'
-    condition: eq(variables['MRWebRTC_RestorePDBs'], 'true')
-
-  # Move PDBs back into their original location for the linker to find them
-  - task: PowerShell@2
-    displayName: Move core PDBs back in place
-    inputs:
-      targetType: filePath
-      filePath: tools/ci/copyPdbsForBuilding.ps1
-      arguments: '-BuildConfig ${{parameters.buildConfig}} -BuildPlatform ${{parameters.buildPlatform}} -SourcePath "$(Build.SourcesDirectory)/_pdbs" -OutputPath "bin/${{parameters.buildPlatform}}/${{parameters.buildArch}}/${{parameters.buildConfig}}"'
-    condition: eq(variables['MRWebRTC_RestorePDBs'], 'true')
+    timeoutInMinutes: 5
 
   # Use NuGet 5.2.0
   - task: NuGetToolInstaller@1
     displayName: 'Use NuGet 5.2.0'
     inputs:
       versionSpec: 5.2.0
+    timeoutInMinutes: 5
+
+  # Compute the PDB package variables
+  - ${{ if eq(parameters.restoreCorePdbs, 'true') }}:
+    - task: PowerShell@2
+      displayName: 'Compute libwebrtc PDB package variables'
+      inputs:
+        targetType: 'filePath'
+        filePath: '$(Build.SourcesDirectory)/tools/ci/computePdbPackageVars.ps1'
+      env:
+        # Read $(MRWebRTC_PdbPackageVersion) from pipeline variables
+        WRITE_VERSION: 'false'
+      timeoutInMinutes: 5
+
+  # Download the PDBs for libwebrtc
+  - ${{ if eq(parameters.restoreCorePdbs, 'true') }}:
+    - task: UniversalPackages@0
+      displayName: 'Download libwebrtc PDBs'
+      inputs:
+        command: download
+        vstsFeed: $(MRWebRTC_PdbFeed)
+        vstsFeedPackage: $(MRWebRTC_PdbPackageName)
+        vstsPackageVersion: $(MRWebRTC_PdbPackageVersion)
+        downloadDirectory: '$(Build.SourcesDirectory)\_pdbs'
+      timeoutInMinutes: 10
+
+  # Move PDBs back into their original location for the linker to find them
+  - ${{ if eq(parameters.restoreCorePdbs, 'true') }}:
+    - task: PowerShell@2
+      displayName: 'Move libwebrtc PDBs back in place'
+      inputs:
+        targetType: 'filePath'
+        filePath: '$(Build.SourcesDirectory)/tools/ci/copyPdbsForBuilding.ps1'
+        arguments: '-BuildConfig ${{parameters.buildConfig}} -BuildPlatform ${{parameters.buildPlatform}} -SourcePath "$(Build.SourcesDirectory)/_pdbs" -OutputPath "bin/${{parameters.buildPlatform}}/${{parameters.buildArch}}/${{parameters.buildConfig}}"'
+      timeoutInMinutes: 10
 
   # Generate custom packages.config to restore only the necessary packages for the current build triple.
   # This helps both with decreasing restore time and with minimizing disk space to avoid the 10GB limit.
   # This task sets $(PackagesConfigFile) to the filename of the generated 'packages.config' file.
-  - task: PowerShell@2
-    displayName: Generate packages.config for build triple
-    inputs:
-      targetType: filePath
-      filePath: tools/ci/generateCppPackagesConfig.ps1
-      arguments: '-BuildConfig ${{parameters.buildConfig}} -BuildPlatform ${{parameters.buildPlatform}} -BuildArch ${{parameters.buildArch}} -InputFile "$(Build.SourcesDirectory)/libs/Microsoft.MixedReality.WebRTC.Native/src/${{parameters.buildPlatform}}/packages.config" -OutputFile "bin/${{parameters.buildPlatform}}/${{parameters.buildArch}}/${{parameters.buildConfig}}/packages.config"'
-    condition: eq(variables['MRWebRTC_RestorePDBs'], 'true')
+  - ${{ if eq(parameters.restoreCorePdbs, 'true') }}:
+    - task: PowerShell@2
+      displayName: 'Generate packages.config for build triple'
+      inputs:
+        targetType: 'filePath'
+        filePath: '$(Build.SourcesDirectory)/tools/ci/generateCppPackagesConfig.ps1'
+        arguments: '-BuildConfig ${{parameters.buildConfig}} -BuildPlatform ${{parameters.buildPlatform}} -BuildArch ${{parameters.buildArch}} -InputFile "$(Build.SourcesDirectory)/tools/build/mrwebrtc/${{parameters.buildPlatform}}/packages.config" -OutputFile "bin/${{parameters.buildPlatform}}/${{parameters.buildArch}}/${{parameters.buildConfig}}/packages.config"'
+      timeoutInMinutes: 5
 
-  # Restore the NuGet packages containing the input dependencies (non-PDB case)
+  # Restore the NuGet packages containing prebuilt libwebrtc (for mrwebrtc build)
   - task: 333b11bd-d341-40d9-afcf-b32d5ce6f23b@2  # NuGetCommand@2
-    displayName: 'NuGet restore C++ lib'
+    displayName: 'NuGet restore mrwebrtc'
     inputs:
-      command: restore
+      command: 'restore'
       restoreSolution: '$(PackagesConfigFile)'
       restoreDirectory: '$(Build.SourcesDirectory)/packages'
       includeNuGetOrg: true
-      feedsToUse: config
+      feedsToUse: 'config'
       nugetConfigPath: '$(NuGetConfigPath)'
     timeoutInMinutes: 30
 
@@ -104,87 +174,67 @@ jobs:
       versionSpec: '>=2.7.16 <2.8.0'
     timeoutInMinutes: 5
 
-  # Map build* variables to script* ones
-  - task: PowerShell@2
-    displayName: Map script variables
-    inputs:
-      targetType: filePath
-      filePath: tools/ci/mapVariables.ps1
-      arguments: '${{parameters.buildPlatform}} ${{parameters.buildArch}} ${{parameters.buildConfig}}'
-
   # Prepare the environment with the setup script from Google
   - task: PythonScript@0
-    displayName: Prepare WebRTC env
+    displayName: 'Prepare WebRTC env'
     inputs:
       scriptSource: 'filePath'
       scriptPath: 'external/webrtc-uwp-sdk/scripts/run.py'
       arguments: '-a prepare -p $(scriptPlatform) --cpus $(scriptArch) -c $(scriptConfig)'
     timeoutInMinutes: 10
 
-  # Generate custom .vcxproj to import only the necessary packages for the current build triple
-  - task: PowerShell@2
-    displayName: 'Modify .vcxproj for build triple'
-    inputs:
-      targetType: filePath
-      filePath: tools/ci/modifyCppProject.ps1
-      arguments: '-BuildConfig ${{parameters.buildConfig}} -BuildPlatform ${{parameters.buildPlatform}} -BuildArch ${{parameters.buildArch}} -ProjectFile "libs/Microsoft.MixedReality.WebRTC.Native/src/${{parameters.buildPlatform}}/Microsoft.MixedReality.WebRTC.Native.${{parameters.buildPlatform}}.vcxproj"'
-    condition: eq(variables['MRWebRTC_RestorePDBs'], 'true')
+  # Clean-up unused files
+  - script: |
+      del /F /S /Q "depot_tools/external_bin/gsutil"
+      del /F /S /Q "chromium/third_party/protobuf/java"
+      del /F /S /Q "chromium/tools/android"
+      del /F /S /Q "chromium/tools/code_coverage"
+    workingDirectory: 'external/webrtc-uwp-sdk/webrtc/xplatform'
+    displayName: 'Clean-up unused files'
 
-  # Build Microsoft.MixedReality.WebRTC.Native.dll
+  # Generate custom .vcxproj to import only the necessary packages for the current build triple
+  - ${{ if eq(parameters.restoreCorePdbs, 'true') }}:
+    - task: PowerShell@2
+      displayName: 'Modify .vcxproj for build triple'
+      inputs:
+        targetType: filePath
+        filePath: tools/ci/modifyCppProject.ps1
+        arguments: '-BuildConfig ${{parameters.buildConfig}} -BuildPlatform ${{parameters.buildPlatform}} -BuildArch ${{parameters.buildArch}} -ProjectFile "tools/build/mrwebrtc/${{parameters.buildPlatform}}/mrwebrtc-${{parameters.buildPlatform}}.vcxproj"'
+
+  # Run component detection
+  - ${{ if eq(parameters.runComponentDetection, 'true') }}:
+    - task: ms.vss-governance-buildtask.governance-build-task-component-detection.ComponentGovernanceComponentDetection@0
+      displayName: 'Component Detection'
+      timeoutInMinutes: 15
+
+  # Build mrwebrtc.dll
   - task: MSBuild@1
-    displayName: 'Build C++ WebRTC lib ($(buildTriple))'
+    displayName: 'Build mrwebrtc ($(buildTriple))'
     inputs:
-      solution: 'libs/Microsoft.MixedReality.WebRTC.Native/src/${{parameters.buildPlatform}}/Microsoft.MixedReality.WebRTC.Native.${{parameters.buildPlatform}}.vcxproj'
+      solution: 'tools/build/mrwebrtc/${{parameters.buildPlatform}}/mrwebrtc-${{parameters.buildPlatform}}.vcxproj'
       msbuildVersion: 15.0
       msbuildArchitecture: x64
-      platform: '${{parameters.msbuildPlatform}}'
+      platform: '$(msbuildPlatform)'
       configuration: '${{parameters.buildConfig}}'
     timeoutInMinutes: 20
 
-  # Publish Microsoft.MixedReality.WebRTC.Native.dll and associated files (PDB, ...)
-  - task: PublishPipelineArtifact@0
-    displayName: 'Publish C++ WebRTC lib ($(buildTriple))'
-    inputs:
-      artifactName: 'Microsoft.MixedReality.WebRTC.Native_$(buildTriple)'
-      targetPath: 'bin/${{parameters.buildPlatform}}/${{parameters.buildArch}}/${{parameters.buildConfig}}'
+  # Publish mrwebrtc.dll and mrwebrtc.pdb
+  - ${{ if eq(parameters.publishArtifacts, 'true') }}:
+    - task: CopyFiles@2
+      displayName: 'Stage mrwebrtc artifacts'
+      inputs:
+        sourceFolder: 'bin/${{parameters.buildPlatform}}/${{parameters.buildArch}}/${{parameters.buildConfig}}'
+        contents: '**/mrwebrtc.@(pdb|dll)'
+        targetFolder: '$(Build.ArtifactStagingDirectory)'
+    - task: PublishPipelineArtifact@0
+      displayName: 'Publish mrwebrtc ($(buildTriple))'
+      inputs:
+        artifactName: 'mrwebrtc_$(buildTriple)'
+        targetPath: '$(Build.ArtifactStagingDirectory)'
 
-  # Delete PDBs to save disk space, otherwise the NuGet download below fails in Debug
-  - powershell: |
-      Remove-Item "bin/${{parameters.buildPlatform}}/${{parameters.buildArch}}/${{parameters.buildConfig}}/*" -Force -Include "*.pdb" -Exclude "Microsoft.MixedReality.WebRTC.*","NativeLib.*","NativeTests.*"
-    displayName: 'Delete PDBs after linking webrtc.lib'
-    condition: eq(variables['MRWebRTC_RestorePDBs'], 'true')
-
-  # Restore the NuGet packages for the C++ tests
-  - task: 333b11bd-d341-40d9-afcf-b32d5ce6f23b@2  # NuGetCommand@2
-    displayName: 'NuGet restore C++ tests'
-    inputs:
-      command: restore
-      restoreSolution: '$(Build.SourcesDirectory)/libs/Microsoft.MixedReality.WebRTC.Native/test/packages.config'
-      restoreDirectory: '$(Build.SourcesDirectory)/packages'
-      includeNuGetOrg: true
-      feedsToUse: config
-      nugetConfigPath: '$(NuGetConfigPath)'
-    timeoutInMinutes: 10
-
-  # Build the C++ tests
-  - task: MSBuild@1
-    condition: eq('${{parameters.buildPlatform}}', 'Win32')
-    displayName: 'Build C++ tests ($(buildTriple))'
-    inputs:
-      solution: 'libs/Microsoft.MixedReality.WebRTC.Native/test/Microsoft.MixedReality.WebRTC.Native.Tests.vcxproj'
-      msbuildVersion: 15.0
-      msbuildArchitecture: x64
-      platform: '${{parameters.msbuildPlatform}}'
-      configuration: '${{parameters.buildConfig}}'
-      msbuildArguments: '/p:DisableDeviceTests=1' # Disable tests requiring a webcam or microphone
-    timeoutInMinutes: 15
-
-  # Run C++ test
-  - task: VSTest@2
-    condition: eq('${{parameters.buildPlatform}}', 'Win32')
-    displayName: 'Run C++ tests ($(buildTriple))'
-    inputs:
-      testAssemblyVer2: 'Microsoft.MixedReality.WebRTC.Native.Tests.exe'
-      searchFolder: '$(Build.SourcesDirectory)/bin/${{parameters.buildPlatform}}/${{parameters.buildArch}}/${{parameters.buildConfig}}'
-      pathtoCustomTestAdapters: '$(Build.SourcesDirectory)/packages/GoogleTestAdapter.0.16.1/build/_common'
-    timeoutInMinutes: 30
+  - ${{ if and(eq(parameters.withTesting, 'true'), eq(parameters.buildPlatform, 'Win32')) }}:
+    # Run mrwebrtc Windows Desktop tests
+    - template: 'steps-mrwebrtc-test-win32.yaml'
+      parameters:
+        buildArch: '${{parameters.buildArch}}'
+        buildConfig: '${{parameters.buildConfig}}'

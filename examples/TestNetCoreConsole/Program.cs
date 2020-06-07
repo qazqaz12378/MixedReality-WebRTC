@@ -12,6 +12,11 @@ namespace TestNetCoreConsole
     {
         static async Task Main(string[] args)
         {
+            Transceiver audioTransceiver = null;
+            Transceiver videoTransceiver = null;
+            LocalAudioTrack localAudioTrack = null;
+            LocalVideoTrack localVideoTrack = null;
+
             try
             {
                 bool needVideo = Array.Exists(args, arg => (arg == "-v") || (arg == "--video"));
@@ -43,28 +48,34 @@ namespace TestNetCoreConsole
                 if (needVideo)
                 {
                     Console.WriteLine("Opening local webcam...");
-                    await pc.AddLocalVideoTrackAsync();
+                    localVideoTrack = await LocalVideoTrack.CreateFromDeviceAsync();
+                    videoTransceiver = pc.AddTransceiver(MediaKind.Video);
+                    videoTransceiver.DesiredDirection = Transceiver.Direction.SendReceive;
+                    videoTransceiver.LocalVideoTrack = localVideoTrack;
                 }
 
                 // Record audio from local microphone, and send to remote peer
                 if (needAudio)
                 {
                     Console.WriteLine("Opening local microphone...");
-                    await pc.AddLocalAudioTrackAsync();
+                    localAudioTrack = await LocalAudioTrack.CreateFromDeviceAsync();
+                    audioTransceiver = pc.AddTransceiver(MediaKind.Audio);
+                    audioTransceiver.DesiredDirection = Transceiver.Direction.SendReceive;
+                    audioTransceiver.LocalAudioTrack = localAudioTrack;
                 }
 
                 // Setup signaling
                 Console.WriteLine("Starting signaling...");
                 var signaler = new NamedPipeSignaler.NamedPipeSignaler(pc, "testpipe");
-                signaler.SdpMessageReceived += (string type, string sdp) => {
-                    pc.SetRemoteDescription(type, sdp);
-                    if (type == "offer")
+                signaler.SdpMessageReceived += async (SdpMessage message) => {
+                    await pc.SetRemoteDescriptionAsync(message);
+                    if (message.Type == SdpMessageType.Offer)
                     {
                         pc.CreateAnswer();
                     }
                 };
-                signaler.IceCandidateReceived += (string sdpMid, int sdpMlineindex, string candidate) => {
-                    pc.AddIceCandidate(sdpMid, sdpMlineindex, candidate);
+                signaler.IceCandidateReceived += (IceCandidate candidate) => {
+                    pc.AddIceCandidate(candidate);
                 };
                 await signaler.StartAsync();
 
@@ -72,12 +83,16 @@ namespace TestNetCoreConsole
                 pc.Connected += () => { Console.WriteLine("PeerConnection: connected."); };
                 pc.IceStateChanged += (IceConnectionState newState) => { Console.WriteLine($"ICE state: {newState}"); };
                 int numFrames = 0;
-                pc.I420RemoteVideoFrameReady += (I420AVideoFrame frame) => {
-                    ++numFrames;
-                    if (numFrames % 60 == 0)
+                pc.VideoTrackAdded += (RemoteVideoTrack track) =>
+                {
+                    track.I420AVideoFrameReady += (I420AVideoFrame frame) =>
                     {
-                        Console.WriteLine($"Received video frames: {numFrames}");
-                    }
+                        ++numFrames;
+                        if (numFrames % 60 == 0)
+                        {
+                            Console.WriteLine($"Received video frames: {numFrames}");
+                        }
+                    };
                 };
                 if (signaler.IsClient)
                 {
@@ -98,6 +113,9 @@ namespace TestNetCoreConsole
             {
                 Console.WriteLine(e.Message);
             }
+
+            localAudioTrack?.Dispose();
+            localVideoTrack?.Dispose();
 
             Console.WriteLine("Program termined.");
         }

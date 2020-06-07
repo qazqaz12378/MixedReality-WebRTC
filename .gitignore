@@ -9,6 +9,7 @@ examples/*/bin
 tests/Microsoft.MixedReality.WebRTC.Tests/bin
 tests/Microsoft.MixedReality.WebRTC.Tests/build
 tests/Microsoft.MixedReality.WebRTC.Tests/obj
+examples/TestNetCoreConsole/bin
 
 # Visual Studio + Code
 .vs
@@ -16,6 +17,9 @@ tests/Microsoft.MixedReality.WebRTC.Tests/obj
 *.user
 *.suo
 launchSettings.json
+
+# Python
+*.pyc
 
 # UWP packages
 /examples/TestAppUwp/AppPackages
@@ -25,20 +29,13 @@ launchSettings.json
 project.json
 project.lock.json
 
-# Unity artifacts
-/libs/Microsoft.MixedReality.WebRTC.Unity/Assets/Plugins
-/libs/Microsoft.MixedReality.WebRTC.Unity/build
-/libs/Microsoft.MixedReality.WebRTC.Unity/Builds
-/libs/Microsoft.MixedReality.WebRTC.Unity/Library
-/libs/Microsoft.MixedReality.WebRTC.Unity/Temp
-/libs/Microsoft.MixedReality.WebRTC.Unity/Logs
-/libs/Microsoft.MixedReality.WebRTC.Unity/obj
-/libs/Microsoft.MixedReality.WebRTC.Unity/*.csproj
-/libs/Microsoft.MixedReality.WebRTC.Unity/*.sln
+# Unity package binaries
+libs/unity/**/*.dll
+libs/unity/**/*.pdb
+libs/unity/**/*.aar
 
-# Unity third-party dependencies
-/libs/Microsoft.MixedReality.WebRTC.Unity/Assets/MixedRealityToolkit*
-/libs/Microsoft.MixedReality.WebRTC.Unity/Assets/TextMesh Pro*
+# Legacy Unity library location
+libs/Microsoft.MixedReality.WebRTC.Unity
 
 # Certificates
 *.pfx
@@ -55,3 +52,26 @@ xdoc.meta
 
 # Profiling data
 *.etl
+
+# CMake
+CMakefiles/
+
+# Android Studio
+.idea/
+
+# MacOS
+.DS_Store
+
+# libwebrtc intermediate build files
+tools/build/libwebrtc/.checkout.sh
+tools/build/libwebrtc/.config.sh
+tools/build/libwebrtc/.build.sh
+tools/build/libwebrtc/.libwebrtc.cmake
+
+# Android intermediate build files
+tools/build/android/**/*.iml
+tools/build/android/.gradle
+tools/build/android/local.properties
+tools/build/android/**/build
+tools/build/android/captures
+tools/build/android/**/.externalNativeBuild

@@ -3,6 +3,7 @@
 
 using Microsoft.MixedReality.WebRTC.Tracing;
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -23,6 +24,60 @@ namespace Microsoft.MixedReality.WebRTC.Interop
     }
 
     /// <summary>
+    /// Interop optional boolean, conceptually equivalent to <c>bool?</c>.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, Size = 1)]
+    internal struct mrsOptBool
+    {
+        public static readonly mrsOptBool Unset = new mrsOptBool { _value = kUnsetValue };
+        public static readonly mrsOptBool True = new mrsOptBool { _value = -1 };
+        public static readonly mrsOptBool False = new mrsOptBool { _value = 0 };
+
+        private sbyte _value;
+
+        private const sbyte kUnsetValue = 0b01010101;
+
+        public bool HasValue => (_value != kUnsetValue);
+        public bool Value
+        {
+            get
+            {
+                if (!HasValue)
+                {
+                    throw new InvalidOperationException();
+                }
+                return (bool)this;
+            }
+        }
+
+        public static explicit operator mrsOptBool(bool b) { return (b ? True : False); }
+        public static explicit operator mrsOptBool(bool? b)
+        {
+            if (b.HasValue)
+            {
+                return (b.Value ? True : False);
+            }
+            return Unset;
+        }
+        public static explicit operator bool(mrsOptBool b)
+        {
+            if (!b.HasValue)
+            {
+                throw new InvalidOperationException();
+            }
+            return (b._value != 0);
+        }
+        public static explicit operator bool?(mrsOptBool b)
+        {
+            if (b.HasValue)
+            {
+                return (b._value != 0);
+            }
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Attribute to decorate managed delegates used as native callbacks (reverse P/Invoke).
     /// Required by Mono in Ahead-Of-Time (AOT) compiling, and Unity with the IL2CPP backend.
     /// </summary>
@@ -39,11 +94,9 @@ namespace Microsoft.MixedReality.WebRTC.Interop
 
     internal static class Utils
     {
-#if MR_SHARING_WIN
-        internal const string dllPath = "Microsoft.MixedReality.WebRTC.Native.dll";
-#elif MR_SHARING_ANDROID
-        internal const string dllPath = "Microsoft.MixedReality.WebRTC.Native.so";
-#endif
+        // Note that on Windows due to a "bug" in LoadLibraryEx() this filename must not contain any '.'.
+        // See https://github.com/dotnet/runtime/issues/7223
+        internal const string dllPath = "mrwebrtc";
 
         // Error codes returned by the interop API -- see mrs_errors.h
         internal const uint MRS_SUCCESS = 0u;
@@ -56,20 +109,21 @@ namespace Microsoft.MixedReality.WebRTC.Interop
         internal const uint MRS_E_NOT_INITIALIZED = 0x80000006u;
         internal const uint MRS_E_UNSUPPORTED = 0x80000007u;
         internal const uint MRS_E_OUT_OF_RANGE = 0x80000008u;
+        internal const uint MRS_E_BUFFER_TOO_SMALL = 0x80000009u;
         internal const uint MRS_E_PEER_CONNECTION_CLOSED = 0x80000101u;
         internal const uint MRS_E_SCTP_NOT_NEGOTIATED = 0x80000301u;
         internal const uint MRS_E_INVALID_DATA_CHANNEL_ID = 0x80000302u;
 
-        public static IntPtr MakeWrapperRef(object obj)
+        public static IntPtr MakeWrapperRef(object wrapper)
         {
-            var handle = GCHandle.Alloc(obj, GCHandleType.Normal);
-            var arg = GCHandle.ToIntPtr(handle);
-            return arg;
+            var handle = GCHandle.Alloc(wrapper, GCHandleType.Normal);
+            var wrapperRef = GCHandle.ToIntPtr(handle);
+            return wrapperRef;
         }
 
-        public static T ToWrapper<T>(IntPtr peer) where T : class
+        public static T ToWrapper<T>(IntPtr wrapperRef) where T : class
         {
-            var handle = GCHandle.FromIntPtr(peer);
+            var handle = GCHandle.FromIntPtr(wrapperRef);
             var wrapper = (handle.Target as T);
             return wrapper;
         }
@@ -150,6 +204,61 @@ namespace Microsoft.MixedReality.WebRTC.Interop
             int elem_size, int elem_count);
 
         /// <summary>
+        /// Helper to get an exception based on an error code.
+        /// </summary>
+        /// <param name="res">The error code to turn into an exception.</param>
+        /// <returns>The exception corresponding to error code <paramref name="res"/>, or <c>null</c> if
+        /// <paramref name="res"/> was <c>MRS_SUCCESS</c>.</returns>
+        public static Exception GetExceptionForErrorCode(uint res)
+        {
+            switch (res)
+            {
+            case MRS_SUCCESS:
+                return null;
+
+            case MRS_E_UNKNOWN:
+            default:
+                return new Exception();
+
+            case MRS_E_INVALID_PARAMETER:
+                return new ArgumentException();
+
+            case MRS_E_INVALID_OPERATION:
+                return new InvalidOperationException();
+
+            case MRS_E_WRONG_THREAD:
+                return new InvalidOperationException("This method cannot be called on that thread.");
+
+            case MRS_E_NOTFOUND:
+                return new Exception("Object not found.");
+
+            case MRS_E_INVALID_NATIVE_HANDLE:
+                return new InvalidInteropNativeHandleException();
+
+            case MRS_E_NOT_INITIALIZED:
+                return new InvalidOperationException("Object not initialized.");
+
+            case MRS_E_UNSUPPORTED:
+                return new NotSupportedException();
+
+            case MRS_E_OUT_OF_RANGE:
+                return new ArgumentOutOfRangeException();
+
+            case MRS_E_BUFFER_TOO_SMALL:
+                return new BufferTooSmallException();
+
+            case MRS_E_SCTP_NOT_NEGOTIATED:
+                return new SctpNotNegotiatedException();
+
+            case MRS_E_PEER_CONNECTION_CLOSED:
+                return new InvalidOperationException("The operation cannot complete because the peer connection was closed.");
+
+            case MRS_E_INVALID_DATA_CHANNEL_ID:
+                return new ArgumentOutOfRangeException("Invalid ID passed to AddDataChannelAsync().");
+            }
+        }
+
+        /// <summary>
         /// Helper to throw an exception based on an error code.
         /// </summary>
         /// <param name="res">The error code to turn into an exception, if not zero (MRS_SUCCESS).</param>
@@ -159,48 +268,8 @@ namespace Microsoft.MixedReality.WebRTC.Interop
             {
                 return;
             }
-
             MainEventSource.Log.NativeError(res);
-
-            switch (res)
-            {
-                case MRS_E_UNKNOWN:
-                default:
-                    throw new Exception();
-
-                case MRS_E_INVALID_PARAMETER:
-                    throw new ArgumentException();
-
-                case MRS_E_INVALID_OPERATION:
-                    throw new InvalidOperationException();
-
-                case MRS_E_WRONG_THREAD:
-                    throw new InvalidOperationException("This method cannot be called on that thread.");
-
-                case MRS_E_NOTFOUND:
-                    throw new Exception("Object not found.");
-
-                case MRS_E_INVALID_NATIVE_HANDLE:
-                    throw new InvalidInteropNativeHandleException();
-
-                case MRS_E_NOT_INITIALIZED:
-                    throw new InvalidOperationException("Object not initialized.");
-
-                case MRS_E_UNSUPPORTED:
-                    throw new NotSupportedException();
-
-                case MRS_E_OUT_OF_RANGE:
-                    throw new ArgumentOutOfRangeException();
-
-                case MRS_E_SCTP_NOT_NEGOTIATED:
-                    throw new SctpNotNegotiatedException();
-
-                case MRS_E_PEER_CONNECTION_CLOSED:
-                    throw new InvalidOperationException("The operation cannot complete because the peer connection was closed.");
-
-                case MRS_E_INVALID_DATA_CHANNEL_ID:
-                    throw new ArgumentOutOfRangeException("Invalid ID passed to AddDataChannelAsync().");
-            }
+            throw GetExceptionForErrorCode(res);
         }
 
         /// <summary>
@@ -209,5 +278,14 @@ namespace Microsoft.MixedReality.WebRTC.Interop
         /// <param name="value"></param>
         [DllImport(dllPath, CallingConvention = CallingConvention.StdCall, EntryPoint = "mrsSetFrameHeightRoundMode")]
         public static unsafe extern void SetFrameHeightRoundMode(PeerConnection.FrameHeightRoundMode value);
+
+        public static string EncodeTransceiverStreamIDs(List<string> streamIDs)
+        {
+            if ((streamIDs == null) || (streamIDs.Count == 0))
+            {
+                return string.Empty;
+            }
+            return string.Join(";", streamIDs.ToArray());
+        }
     }
 }
